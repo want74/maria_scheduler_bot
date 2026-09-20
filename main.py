@@ -30,9 +30,17 @@ PROXY_URL = getenv("PROXY_URL", "socks5://kan:Parol_12@130.49.146.248:443")
 USER_DATA_FILE = "user_groups.json"
 SUBSCRIPTIONS_FILE = "subscriptions.json"
 
-# время рассылки (локальное время сервера, 24-часовой формат)
-DAILY_SEND_HOUR = int(getenv("DAILY_SEND_HOUR", "21"))
-DAILY_SEND_MINUTE = int(getenv("DAILY_SEND_MINUTE", "00"))
+# ---------- Время рассылки: "HH:MM" ----------
+DAILY_SEND_TIME = getenv("DAILY_SEND_TIME", "19:00")
+try:
+    _h, _m = DAILY_SEND_TIME.split(":")
+    DAILY_SEND_HOUR, DAILY_SEND_MINUTE = int(_h), int(_m)
+    assert 0 <= DAILY_SEND_HOUR < 24 and 0 <= DAILY_SEND_MINUTE < 60
+except Exception:
+    raise SystemExit(
+        f"❌ DAILY_SEND_TIME должен быть в формате HH:MM (например, 21:47), "
+        f"сейчас: {DAILY_SEND_TIME!r}"
+    )
 
 GROUPS_API = "https://ruz.guz.ru/api/dictionary/groups"
 SCHEDULE_API = "https://ruz.guz.ru/api/schedule/group/{group}"
@@ -64,7 +72,8 @@ groups_cache: list[dict] = []
 session: Optional[aiohttp.ClientSession] = None
 user_week: dict[int, date] = {}
 user_groups: dict[int, dict] = {}
-subscriptions: dict[int, dict] = {}   # chat_id -> {"group_oid", "group_name", "group_guid"}
+subscriptions: dict[int, dict] = {}
+bot_instance: Optional[Bot] = None
 
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
@@ -257,18 +266,17 @@ def _options_kb(options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     )
 
 
-def _btn(text: str, callback_data: str, style: Optional[str] = None) -> InlineKeyboardButton:
-    """Кнопка с опциональным цветом. Если style не поддерживается — обычная."""
+def _btn(text: str, callback_data: str,
+         style: Optional[str] = None) -> InlineKeyboardButton:
     if style and SUPPORTS_BTN_STYLE:
-        return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+        return InlineKeyboardButton(text=text, callback_data=callback_data,
+                                    style=style)
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
 async def advance(target, state: FSMContext) -> None:
-    """Продолжает визард, автоматически пропуская шаги с одним вариантом."""
     data = await state.get_data()
 
-    # --- Год ---
     if "year" not in data:
         years = get_years()
         if not years:
@@ -285,7 +293,6 @@ async def advance(target, state: FSMContext) -> None:
 
     year = data["year"]
 
-    # --- Уровень образования ---
     if "kind_edu" not in data:
         kes = get_kind_educations(year)
         if not kes:
@@ -302,7 +309,6 @@ async def advance(target, state: FSMContext) -> None:
 
     kind_edu = data["kind_edu"]
 
-    # --- Факультет ---
     if "faculty_oid" not in data:
         facs = get_faculties(year, kind_edu)
         if not facs:
@@ -317,7 +323,6 @@ async def advance(target, state: FSMContext) -> None:
 
     faculty_oid = data["faculty_oid"]
 
-    # --- Курс ---
     if "course" not in data:
         courses = get_courses(year, kind_edu, faculty_oid)
         if not courses:
@@ -332,7 +337,6 @@ async def advance(target, state: FSMContext) -> None:
 
     course = data["course"]
 
-    # --- Направление ---
     if "speciality" not in data:
         specs = get_specialities(year, kind_edu, faculty_oid, course)
         if not specs:
@@ -348,7 +352,6 @@ async def advance(target, state: FSMContext) -> None:
 
     speciality = data["speciality"]
 
-    # --- Профиль / магистерская программа ---
     if "specialization" not in data:
         sps = get_specializations(year, kind_edu, faculty_oid, course, speciality)
         if not sps:
@@ -364,7 +367,6 @@ async def advance(target, state: FSMContext) -> None:
 
     specialization = data["specialization"]
 
-    # --- Группа ---
     grps = get_groups(year, kind_edu, faculty_oid, course,
                       speciality, specialization)
     if not grps:
@@ -479,21 +481,17 @@ async def on_group(cb: CallbackQuery, state: FSMContext):
     await finish(cb, state)
 
 
-# ---------- Подписки: кнопки и хендлеры ----------
+# ---------- Подписки ----------
 
 def schedule_actions_kb(chat_id: int) -> InlineKeyboardMarkup:
-    """Кнопка под расписанием: подписаться (зелёная) или отписаться (красная)."""
     if chat_id in subscriptions:
         sub = subscriptions[chat_id]
         return InlineKeyboardMarkup(inline_keyboard=[[
             _btn(f"❌ Отписаться от {sub['group_name']}", "sub:off", style="danger")
         ]])
-    # Ещё не подписан
     group_info = user_groups.get(chat_id)
-    if group_info:
-        label = f"🔔 Подписаться на {group_info['group_name']}"
-    else:
-        label = "🔔 Подписаться на рассылку"
+    label = (f"🔔 Подписаться на {group_info['group_name']}"
+             if group_info else "🔔 Подписаться на рассылку")
     return InlineKeyboardMarkup(inline_keyboard=[[
         _btn(label, "sub:on", style="success")
     ]])
@@ -549,7 +547,8 @@ async def cmd_subscribe(message: Message):
     await message.answer(
         f"✅ Ты подписан на ежедневную рассылку расписания "
         f"для <b>{g['group_name']}</b>.\n"
-        f"Расписание на завтра будет приходить в {DAILY_SEND_HOUR:02d}:{DAILY_SEND_MINUTE:02d}.",
+        f"Расписание на завтра будет приходить в "
+        f"{DAILY_SEND_HOUR:02d}:{DAILY_SEND_MINUTE:02d}.",
         parse_mode="HTML",
     )
 
@@ -621,7 +620,6 @@ def _pick_group_label(lessons: list) -> str:
 
 
 def format_lessons_for_day(lessons: list, iso_date: str) -> str:
-    """Rich-формат с таблицей — для message.answer_rich."""
     yyyy, mm, dd = iso_date.split("-")
     pretty = f"{dd}.{mm}.{yyyy}"
     if not lessons:
@@ -651,7 +649,6 @@ def format_lessons_for_day(lessons: list, iso_date: str) -> str:
 
 
 def format_lessons_for_day_plain(lessons: list, iso_date: str) -> str:
-    """Плоский HTML без таблицы — для фоновой рассылки через bot.send_message."""
     yyyy, mm, dd = iso_date.split("-")
     pretty = f"{dd}.{mm}.{yyyy}"
     if not lessons:
@@ -685,7 +682,6 @@ def split_message(text: str, limit: int = 30000) -> list[str]:
 # ---------- Фоновая рассылка ----------
 
 async def send_rich(bot: Bot, chat_id: int, html: str, reply_markup=None) -> bool:
-    """Пытается отправить rich-сообщение. Возвращает True, если удалось."""
     for name in ("send_rich", "send_rich_message"):
         method = getattr(bot, name, None)
         if callable(method):
@@ -711,23 +707,16 @@ async def send_daily_to_all(bot: Bot) -> None:
     iso_date = tomorrow.strftime("%Y-%m-%d")
 
     print(f"[scheduler] рассылка на {iso_date} ({api_date}), подписок: {len(subscriptions)}")
-    #                                                    ^^^^^^^^^^^^^^
-    #                                    добавил api_date — сразу видно, какую дату шлём в API
 
     for chat_id, sub in list(subscriptions.items()):
         try:
-            # 1) КОГО обрабатываем
             print(f"[scheduler] → chat {chat_id} | group {sub['group_oid']} ({sub['group_name']})")
-
             lessons = await fetch_schedule(sub["group_oid"], api_date, api_date)
             day_lessons = [l for l in lessons if l.get("date") == iso_date]
-
-            # 2) СКОЛЬКО вернул API и сколько попало на «завтра»
             print(f"[scheduler]   API вернул {len(lessons)} занятий, из них на завтра: {len(day_lessons)}")
 
             if not day_lessons:
-                # 3) ЯВНО говорим, что пропускаем и почему
-                print(f"[scheduler]   занятий нет — пропускаю (сообщение не отправляется)")
+                print("[scheduler]   занятий нет — пропускаю (сообщение не отправляется)")
                 continue
 
             kb = schedule_actions_kb(chat_id)
@@ -736,21 +725,16 @@ async def send_daily_to_all(bot: Bot) -> None:
 
             sent = await send_rich(bot, chat_id, rich, reply_markup=kb)
             if not sent:
-                # 4) ЯВНО говорим, что rich не сработал и мы уходим в fallback
-                print(f"[scheduler]   rich не сработал, отправляю plain HTML")
+                print("[scheduler]   rich не сработал, отправляю plain HTML")
                 await bot.send_message(chat_id, plain, parse_mode="HTML",
                                        reply_markup=kb)
-
-            # 5) Подтверждаем успех
             print(f"[scheduler]   ✅ отправлено в chat {chat_id}")
         except Exception as e:
-            # 6) В ошибке указываем chat_id и текст исключения
             print(f"[scheduler]   ❌ ОШИБКА для chat {chat_id}: {type(e).__name__}: {e}")
             traceback.print_exc()
 
 
 async def daily_loop(bot: Bot) -> None:
-    """Ждёт времени DAILY_SEND_HOUR:DAILY_SEND_MINUTE и запускает рассылку."""
     while True:
         try:
             now = datetime.now()
@@ -763,8 +747,7 @@ async def daily_loop(bot: Bot) -> None:
             if target <= now:
                 target += timedelta(days=1)
             wait_s = (target - now).total_seconds()
-            print(f"[scheduler] следующая рассылка: {target} "
-                  f"(через {wait_s / 3600:.1f} ч)")
+            print(f"[scheduler] следующая рассылка: {target} (через {wait_s / 3600:.1f} ч)")
             await asyncio.sleep(wait_s)
             await send_daily_to_all(bot)
         except asyncio.CancelledError:
@@ -860,7 +843,6 @@ async def on_day_press(message: Message):
     for chunk in split_message(html):
         await message.answer_rich(rich_message=InputRichMessage(html=chunk))
 
-    # отдельным сообщением — кнопка подписки/отписки
     if message.chat.id in subscriptions:
         hint = "🔔 Рассылка расписания на завтра включена."
     else:
@@ -882,6 +864,16 @@ async def cmd_reload(message: Message):
         await message.answer(f"❌ Не удалось обновить: {e}")
 
 
+@router.message(Command("test_daily"))
+async def cmd_test_daily(message: Message):
+    if bot_instance is None:
+        await message.answer("Бот не инициализирован.")
+        return
+    await message.answer("⏳ Запускаю тестовую рассылку…")
+    await send_daily_to_all(bot_instance)
+    await message.answer("✅ Тест завершён. Смотри консоль.")
+
+
 @router.message()
 async def fallback(message: Message):
     await message.answer("Неизвестная команда. /start или /schedule")
@@ -890,7 +882,7 @@ async def fallback(message: Message):
 # ---------- Точка входа ----------
 
 async def main():
-    global session, groups_cache, user_groups, subscriptions
+    global session, groups_cache, user_groups, subscriptions, bot_instance
 
     connector = ProxyConnector.from_url(PROXY_URL)
     session = aiohttp.ClientSession(
@@ -909,11 +901,22 @@ async def main():
     print(f"Загружено подписок: {len(subscriptions)}")
 
     bot = Bot(token=TOKEN)
+    bot_instance = bot
     print("start")
+
+    # ⚠️ Убираем возможный webhook, чтобы polling не падал с Conflict
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("[init] webhook удалён (если был)")
+    except Exception as e:
+        print(f"[init] не удалось удалить webhook: {type(e).__name__}: {e}")
 
     scheduler_task = asyncio.create_task(daily_loop(bot))
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
     finally:
         scheduler_task.cancel()
         try:
