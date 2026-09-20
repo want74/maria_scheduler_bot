@@ -24,6 +24,17 @@ GROUP_ID = 99
 API_URL = "https://ruz.guz.ru/api/schedule/group/{group}"
 
 RU_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+FULL_DAYS = {
+    "Пн": "Понедельник",
+    "Вт": "Вторник",
+    "Ср": "Среда",
+    "Чт": "Четверг",
+    "Пт": "Пятница",
+    "Сб": "Суббота",
+    "Вс": "Воскресенье",
+}
+
 DAY_BUTTON_RE = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})\s*\((\w{2})\)$")
 
 # состояние: chat_id -> понедельник отображаемой недели
@@ -40,8 +51,10 @@ def current_monday() -> date:
     today = date.today()
     return today - timedelta(days=today.weekday())
 
+
 def get_user_monday(chat_id: int) -> date:
     return user_week.get(chat_id, current_monday())
+
 
 def set_user_monday(chat_id: int, monday: date) -> None:
     user_week[chat_id] = monday
@@ -64,10 +77,15 @@ async def fetch_schedule(group_id: int, start: str, finish: str) -> list:
 # ---------- Форматирование (Rich HTML) ----------
 
 def format_lessons_for_day(lessons: list, iso_date: str) -> str:
-    if not lessons:
-        return f"<p>📅 {iso_date} — занятий нет.</p>"
+    # iso_date приходит как YYYY-MM-DD, выводим как DD.MM.YYYY
+    yyyy, mm, dd = iso_date.split("-")
+    pretty_date = f"{dd}.{mm}.{yyyy}"
 
-    day_name = lessons[0].get("dayOfWeekString", "")
+    if not lessons:
+        return f"<p><b>📅 Занятий нет</b> — {pretty_date}</p>"
+
+    short_day = lessons[0].get("dayOfWeekString", "")
+    full_day = FULL_DAYS.get(short_day, short_day)
 
     grp = ""
     for l in lessons:
@@ -76,11 +94,11 @@ def format_lessons_for_day(lessons: list, iso_date: str) -> str:
             grp = g
             break
 
-    html = f"<h3>{day_name}, {iso_date}</h3>"
+    html = f"<h3>📅 {full_day} ({pretty_date})</h3>"
     if grp:
         html += f"<p>Группа {grp}</p>"
 
-    html += "<table>"
+    html += "<table border='1'>"
     html += (
         "<tr>"
         "<th align='left'>Время</th>"
