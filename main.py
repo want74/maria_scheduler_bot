@@ -1,14 +1,17 @@
 from os import getenv
 import asyncio
+import traceback
 from datetime import date, timedelta
 
 import aiohttp
+from aiohttp_socks import ProxyConnector
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = getenv("BOT_TOKEN")
+PROXY_URL = getenv("PROXY_URL", "socks5://kan:Parol_12@130.49.146.248:443")
 
 GROUP_ID = 99
 API_URL = "https://ruz.guz.ru/api/schedule/group/{group}"
@@ -19,11 +22,14 @@ dp.include_router(router)
 
 
 async def fetch_schedule(group_id: int, start: str, finish: str) -> list:
-    """Загружает расписание с API РУЗ."""
+    """Загружает расписание с API РУЗ через SOCKS5-прокси."""
     url = API_URL.format(group=group_id)
     params = {"start": start, "finish": finish, "lng": 1}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, timeout=15) as resp:
+    timeout = aiohttp.ClientTimeout(total=20)
+
+    connector = ProxyConnector.from_url(PROXY_URL)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with session.get(url, params=params) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -33,7 +39,6 @@ def format_lessons(lessons: list) -> str:
     if not lessons:
         return "На эту неделю занятий нет."
 
-    # группируем по дате
     by_date: dict[str, list] = {}
     for l in lessons:
         by_date.setdefault(l["date"], []).append(l)
@@ -56,9 +61,17 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
     return [text[i:i + limit] for i in range(0, len(text), limit)]
 
 
+@router.message(CommandStart())
+async def cmd_start(message):
+    await message.answer(
+        "Привет! Я показываю расписание.\n\n"
+        "Команды:\n"
+        "/schedule — расписание на текущую неделю"
+    )
+
+
 @router.message(Command("schedule"))
 async def cmd_schedule(message):
-    # текущая неделя: понедельник — воскресенье
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
@@ -73,7 +86,8 @@ async def cmd_schedule(message):
         await message.answer(f"❌ Ошибка сети: {e}")
         return
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        traceback.print_exc()
+        await message.answer(f"❌ {type(e).__name__}: {e!r}")
         return
 
     text = format_lessons(lessons)
@@ -82,8 +96,8 @@ async def cmd_schedule(message):
 
 
 @router.message()
-async def hello(message):
-    await message.answer("Hello")
+async def fallback(message):
+    await message.answer("Неизвестная команда. Попробуй /schedule")
 
 
 async def main():
