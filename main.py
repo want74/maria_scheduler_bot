@@ -31,7 +31,7 @@ USER_DATA_FILE = "user_groups.json"
 SUBSCRIPTIONS_FILE = "subscriptions.json"
 
 # время рассылки (локальное время сервера, 24-часовой формат)
-DAILY_SEND_HOUR = int(getenv("DAILY_SEND_HOUR", "19"))
+DAILY_SEND_HOUR = int(getenv("DAILY_SEND_HOUR", "21:47"))
 DAILY_SEND_MINUTE = int(getenv("DAILY_SEND_MINUTE", "0"))
 
 GROUPS_API = "https://ruz.guz.ru/api/dictionary/groups"
