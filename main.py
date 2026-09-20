@@ -39,7 +39,6 @@ FULL_DAYS = {
 }
 DAY_BUTTON_RE = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})\s*\((\w{2})\)$")
 
-# ← NEW: отображаемые названия уровней образования
 KIND_EDU_NAMES = {
     0: "Бакалавриат",
     1: "Магистратура",
@@ -99,7 +98,6 @@ async def fetch_schedule(group_id: int, start: str, finish: str) -> list:
 
 # ---------- Фильтрация справочника ----------
 
-# ← CHANGED: добавлен параметр kind_edu
 def _filter(year=None, kind_edu=None, faculty_oid=None, course=None,
             speciality=None, specialization=None) -> list[dict]:
     res = groups_cache
@@ -118,7 +116,6 @@ def _filter(year=None, kind_edu=None, faculty_oid=None, course=None,
     return res
 
 
-# ← NEW: человекочитаемая метка учебного года
 def _year_label(year: int) -> str:
     return f"{year}-{year + 1}"
 
@@ -127,7 +124,6 @@ def get_years() -> list[int]:
     return sorted({g["YearOfEducation"] for g in groups_cache}, reverse=True)
 
 
-# ← NEW: уровни образования для выбранного года
 def get_kind_educations(year: int) -> list[int]:
     return sorted({
         g["kindEducation"]
@@ -136,7 +132,6 @@ def get_kind_educations(year: int) -> list[int]:
     })
 
 
-# ← CHANGED: добавлен фильтр по kind_edu
 def get_faculties(year: int, kind_edu: int) -> list[tuple[int, str]]:
     seen: dict[int, str] = {}
     for g in _filter(year=year, kind_edu=kind_edu):
@@ -198,7 +193,7 @@ def _label_specialization(s) -> str:
 
 class Wizard(StatesGroup):
     year = State()
-    kind_edu = State()        # ← NEW
+    kind_edu = State()
     faculty = State()
     course = State()
     speciality = State()
@@ -209,13 +204,17 @@ class Wizard(StatesGroup):
 async def _send(target, text: str, reply_markup=None) -> None:
     if isinstance(target, CallbackQuery):
         try:
-            await target.message.edit_text(text, reply_markup=reply_markup)
+            await target.message.edit_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
+            )
             return
         except Exception:
             pass
-        await target.message.answer(text, reply_markup=reply_markup)
+        await target.message.answer(
+            text, reply_markup=reply_markup, parse_mode="HTML"
+        )
     elif isinstance(target, Message):
-        await target.answer(text, reply_markup=reply_markup)
+        await target.answer(text, reply_markup=reply_markup, parse_mode="HTML")
 
 
 def _options_kb(options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
@@ -241,12 +240,12 @@ async def advance(target, state: FSMContext) -> None:
         await state.set_state(Wizard.year)
         return await _send(
             target, "📅 Выбери учебный год:",
-            _options_kb([(_year_label(y), f"y:{y}") for y in years]),  # ← CHANGED
+            _options_kb([(_year_label(y), f"y:{y}") for y in years]),
         )
 
     year = data["year"]
 
-    # --- Уровень образования (NEW) ---
+    # --- Уровень образования ---
     if "kind_edu" not in data:
         kes = get_kind_educations(year)
         if not kes:
@@ -265,7 +264,7 @@ async def advance(target, state: FSMContext) -> None:
 
     # --- Факультет ---
     if "faculty_oid" not in data:
-        facs = get_faculties(year, kind_edu)                    # ← CHANGED
+        facs = get_faculties(year, kind_edu)
         if not facs:
             await _send(target, "❌ Нет факультетов для выбранных фильтров.")
             return
@@ -280,7 +279,7 @@ async def advance(target, state: FSMContext) -> None:
 
     # --- Курс ---
     if "course" not in data:
-        courses = get_courses(year, kind_edu, faculty_oid)      # ← CHANGED
+        courses = get_courses(year, kind_edu, faculty_oid)
         if not courses:
             await _send(target, "❌ Нет курсов.")
             return
@@ -295,7 +294,7 @@ async def advance(target, state: FSMContext) -> None:
 
     # --- Направление ---
     if "speciality" not in data:
-        specs = get_specialities(year, kind_edu, faculty_oid, course)  # ← CHANGED
+        specs = get_specialities(year, kind_edu, faculty_oid, course)
         if not specs:
             await _send(target, "❌ Нет направлений.")
             return
@@ -311,7 +310,7 @@ async def advance(target, state: FSMContext) -> None:
 
     # --- Профиль / магистерская программа ---
     if "specialization" not in data:
-        sps = get_specializations(year, kind_edu, faculty_oid, course, speciality)  # ← CHANGED
+        sps = get_specializations(year, kind_edu, faculty_oid, course, speciality)
         if not sps:
             await _send(target, "❌ Нет профилей.")
             return
@@ -327,7 +326,7 @@ async def advance(target, state: FSMContext) -> None:
 
     # --- Группа ---
     grps = get_groups(year, kind_edu, faculty_oid, course,
-                      speciality, specialization)               # ← CHANGED
+                      speciality, specialization)
     if not grps:
         await _send(target, "❌ Группы не найдены.")
         return
@@ -366,10 +365,15 @@ async def finish(target, state: FSMContext) -> None:
         f"<i>groupOid: {data['group_oid']}</i>\n\n"
         "Нажми «📅 Расписание», чтобы смотреть пары."
     )
+
     if isinstance(target, CallbackQuery):
-        await target.message.answer(text, reply_markup=main_menu_kb())
+        await target.message.answer(
+            text, reply_markup=main_menu_kb(), parse_mode="HTML"
+        )
     else:
-        await target.answer(text, reply_markup=main_menu_kb())
+        await target.answer(
+            text, reply_markup=main_menu_kb(), parse_mode="HTML"
+        )
 
 
 # ---------- Callback-хендлеры визарда ----------
@@ -381,7 +385,6 @@ async def on_year(cb: CallbackQuery, state: FSMContext):
     await advance(cb, state)
 
 
-# ← NEW
 @router.callback_query(Wizard.kind_edu, F.data.startswith("ke:"))
 async def on_kind_edu(cb: CallbackQuery, state: FSMContext):
     await state.update_data(kind_edu=int(cb.data.split(":")[1]))
@@ -407,7 +410,7 @@ async def on_course(cb: CallbackQuery, state: FSMContext):
 async def on_speciality(cb: CallbackQuery, state: FSMContext):
     idx = int(cb.data.split(":")[1])
     d = await state.get_data()
-    specs = get_specialities(d["year"], d["kind_edu"], d["faculty_oid"], d["course"])  # ← CHANGED
+    specs = get_specialities(d["year"], d["kind_edu"], d["faculty_oid"], d["course"])
     await state.update_data(speciality=specs[idx])
     await cb.answer()
     await advance(cb, state)
@@ -418,7 +421,7 @@ async def on_specialization(cb: CallbackQuery, state: FSMContext):
     idx = int(cb.data.split(":")[1])
     d = await state.get_data()
     sps = get_specializations(d["year"], d["kind_edu"], d["faculty_oid"],
-                              d["course"], d["speciality"])       # ← CHANGED
+                              d["course"], d["speciality"])
     await state.update_data(specialization=sps[idx])
     await cb.answer()
     await advance(cb, state)
@@ -503,7 +506,10 @@ def format_lessons_for_day(lessons: list, iso_date: str) -> str:
     html = f"<h3>📅 {full} ({pretty})</h3>"
     if grp:
         html += f"<p>Группа {grp}</p>"
-    html += "<table border='1'><tr><th align='left'>Время</th><th align='left'>Занятие</th><th align='left'>Информация</th></tr>"
+    html += ("<table border='1'><tr>"
+             "<th align='left'>Время</th>"
+             "<th align='left'>Занятие</th>"
+             "<th align='left'>Информация</th></tr>")
     for l in sorted(lessons, key=lambda x: x["beginLesson"]):
         html += (
             "<tr>"
@@ -531,6 +537,7 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer(
             f"👋 Привет! Твоя группа: <b>{g['group_name']}</b>",
             reply_markup=main_menu_kb(),
+            parse_mode="HTML",
         )
     else:
         await message.answer("👋 Привет! Давай выберем твою группу.")
