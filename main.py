@@ -12,6 +12,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    InputRichMessage,
 )
 from dotenv import load_dotenv
 
@@ -44,37 +45,14 @@ async def fetch_schedule(group_id: int, start: str, finish: str) -> list:
             return await resp.json()
 
 
-# ---------- Форматирование таблицы ----------
-
-def _wrap(text: str, width: int) -> list[str]:
-    """Разбивает строку по словам так, чтобы каждая часть влезала в width."""
-    words = text.split()
-    lines, cur = [], ""
-    for w in words:
-        if len(cur) + (1 if cur else 0) + len(w) <= width:
-            cur = f"{cur} {w}".strip()
-        else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
-    return lines or [""]
-
-
-def _pad(s: str, width: int) -> str:
-    """Дополняет строку пробелами справа до width (с обрезкой, если длиннее)."""
-    s = s[:width]
-    return s + " " * (width - len(s))
-
+# ---------- Форматирование (Rich HTML) ----------
 
 def format_lessons_for_day(lessons: list, iso_date: str) -> str:
     if not lessons:
-        return f"📅 {iso_date} — занятий нет."
+        return f"<p>📅 {iso_date} — занятий нет.</p>"
 
     day_name = lessons[0].get("dayOfWeekString", "")
 
-    # группа/поток для шапки (если есть)
     grp = ""
     for l in lessons:
         g = l.get("subGroup") or l.get("stream") or (l.get("listGroups") or [{}])[0].get("group")
@@ -82,46 +60,39 @@ def format_lessons_for_day(lessons: list, iso_date: str) -> str:
             grp = g
             break
 
-    header = f"📅 <b>{day_name}, {iso_date}</b>"
+    html = f"<h3>{day_name}, {iso_date}</h3>"
     if grp:
-        header += f" · {grp}"
+        html += f"<p>Группа {grp}</p>"
 
-    W1, W2, W3 = 13, 30, 24  # ширины колонок (без учёта рамок)
+    html += "<table>"
+    html += (
+        "<tr>"
+        "<th align='left'>Время</th>"
+        "<th align='left'>Занятие</th>"
+        "<th align='left'>Информация</th>"
+        "</tr>"
+    )
 
-    top  = "┌" + "─" * (W1 + 2) + "┬" + "─" * (W2 + 2) + "┬" + "─" * (W3 + 2) + "┐"
-    mid  = "├" + "─" * (W1 + 2) + "┼" + "─" * (W2 + 2) + "┼" + "─" * (W3 + 2) + "┤"
-    bot  = "└" + "─" * (W1 + 2) + "┴" + "─" * (W2 + 2) + "┴" + "─" * (W3 + 2) + "┘"
-    hrow = f"│ {_pad('Время', W1)} │ {_pad('Занятие', W2)} │ {_pad('Информация', W3)} │"
-
-    rows = [top, hrow, mid]
-
-    sorted_lessons = sorted(lessons, key=lambda x: x["beginLesson"])
-    last_idx = len(sorted_lessons) - 1
-
-    for idx, l in enumerate(sorted_lessons):
+    for l in sorted(lessons, key=lambda x: x["beginLesson"]):
         time_s = f"{l['beginLesson']}–{l['endLesson']}"
         name_s = l["discipline"]
-        loc_s  = f"{l['auditorium']} ({l['building']})"
+        loc_s = f"{l['auditorium']} ({l['building']})"
         info_s = f"{l['kindOfWork']}, {l['lecturer']}"
 
-        c1 = _wrap(time_s, W1)
-        c2 = _wrap(name_s, W2) + _wrap(loc_s, W2)
-        c3 = _wrap(info_s, W3)
+        html += (
+            "<tr>"
+            f"<td>{time_s}</td>"
+            f"<td><b>{name_s}</b><br/>{loc_s}</td>"
+            f"<td>{info_s}</td>"
+            "</tr>"
+        )
 
-        n = max(len(c1), len(c2), len(c3))
-        for i in range(n):
-            a = c1[i] if i < len(c1) else ""
-            b = c2[i] if i < len(c2) else ""
-            c = c3[i] if i < len(c3) else ""
-            rows.append(f"│ {_pad(a, W1)} │ {_pad(b, W2)} │ {_pad(c, W3)} │")
-
-        rows.append(bot if idx == last_idx else mid)
-
-    table = "\n".join(rows)
-    return f"{header}\n<pre>{table}</pre>"
+    html += "</table>"
+    return html
 
 
-def split_message(text: str, limit: int = 4000) -> list[str]:
+def split_message(text: str, limit: int = 30000) -> list[str]:
+    """Rich-сообщение держит до 32k, режем с запасом."""
     return [text[i:i + limit] for i in range(0, len(text), limit)]
 
 
@@ -193,15 +164,19 @@ async def on_day_press(message: Message):
 
     day_lessons = [l for l in lessons if l.get("date") == iso_date]
 
-    text = format_lessons_for_day(day_lessons, iso_date)
-    for chunk in split_message(text):
-        await message.answer(chunk, parse_mode="HTML")
+    html = format_lessons_for_day(day_lessons, iso_date)
+    for chunk in split_message(html):
+        await message.answer_rich(
+            rich_message=InputRichMessage(html=chunk)
+        )
 
 
 @router.message()
 async def fallback(message: Message):
     await message.answer("Неизвестная команда. Попробуй /schedule")
 
+
+# ---------- Точка входа ----------
 
 async def main():
     bot = Bot(token=TOKEN)
