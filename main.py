@@ -32,7 +32,7 @@ SUBSCRIPTIONS_FILE = "subscriptions.json"
 
 # время рассылки (локальное время сервера, 24-часовой формат)
 DAILY_SEND_HOUR = int(getenv("DAILY_SEND_HOUR", "20"))
-DAILY_SEND_MINUTE = int(getenv("DAILY_SEND_MINUTE", "51"))
+DAILY_SEND_MINUTE = int(getenv("DAILY_SEND_MINUTE", "57"))
 
 GROUPS_API = "https://ruz.guz.ru/api/dictionary/groups"
 SCHEDULE_API = "https://ruz.guz.ru/api/schedule/group/{group}"
@@ -702,7 +702,6 @@ async def send_rich(bot: Bot, chat_id: int, html: str, reply_markup=None) -> boo
 
 
 async def send_daily_to_all(bot: Bot) -> None:
-    """Рассылает расписание на завтра всем подписчикам."""
     if not subscriptions:
         print("[scheduler] подписок нет")
         return
@@ -711,14 +710,24 @@ async def send_daily_to_all(bot: Bot) -> None:
     api_date = tomorrow.strftime("%Y.%m.%d")
     iso_date = tomorrow.strftime("%Y-%m-%d")
 
-    print(f"[scheduler] рассылка на {iso_date}, подписок: {len(subscriptions)}")
+    print(f"[scheduler] рассылка на {iso_date} ({api_date}), подписок: {len(subscriptions)}")
+    #                                                    ^^^^^^^^^^^^^^
+    #                                    добавил api_date — сразу видно, какую дату шлём в API
 
     for chat_id, sub in list(subscriptions.items()):
         try:
+            # 1) КОГО обрабатываем
+            print(f"[scheduler] → chat {chat_id} | group {sub['group_oid']} ({sub['group_name']})")
+
             lessons = await fetch_schedule(sub["group_oid"], api_date, api_date)
             day_lessons = [l for l in lessons if l.get("date") == iso_date]
+
+            # 2) СКОЛЬКО вернул API и сколько попало на «завтра»
+            print(f"[scheduler]   API вернул {len(lessons)} занятий, из них на завтра: {len(day_lessons)}")
+
             if not day_lessons:
-                # если завтра занятий нет — ничего не отправляем
+                # 3) ЯВНО говорим, что пропускаем и почему
+                print(f"[scheduler]   занятий нет — пропускаю (сообщение не отправляется)")
                 continue
 
             kb = schedule_actions_kb(chat_id)
@@ -727,9 +736,16 @@ async def send_daily_to_all(bot: Bot) -> None:
 
             sent = await send_rich(bot, chat_id, rich, reply_markup=kb)
             if not sent:
+                # 4) ЯВНО говорим, что rich не сработал и мы уходим в fallback
+                print(f"[scheduler]   rich не сработал, отправляю plain HTML")
                 await bot.send_message(chat_id, plain, parse_mode="HTML",
                                        reply_markup=kb)
-        except Exception:
+
+            # 5) Подтверждаем успех
+            print(f"[scheduler]   ✅ отправлено в chat {chat_id}")
+        except Exception as e:
+            # 6) В ошибке указываем chat_id и текст исключения
+            print(f"[scheduler]   ❌ ОШИБКА для chat {chat_id}: {type(e).__name__}: {e}")
             traceback.print_exc()
 
 
