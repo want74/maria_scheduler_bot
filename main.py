@@ -73,7 +73,7 @@ async def cmd_start(message):
 @router.message(Command("schedule"))
 async def cmd_schedule(message):
     today = date.today()
-    monday = today - timedelta(days=today.weekday())
+    monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
     sunday = monday + timedelta(days=6)
     start = monday.strftime("%Y.%m.%d")
     finish = sunday.strftime("%Y.%m.%d")
