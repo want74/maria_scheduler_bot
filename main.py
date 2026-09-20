@@ -1,17 +1,17 @@
 from os import getenv
 import asyncio
+import re
 import traceback
 from datetime import date, timedelta
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from dotenv import load_dotenv
 
@@ -23,6 +23,9 @@ GROUP_ID = 99
 API_URL = "https://ruz.guz.ru/api/schedule/group/{group}"
 
 RU_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+# формат кнопки: "28.09.2026 (Пн)"
+DAY_BUTTON_RE = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})\s*\((\w{2})\)$")
 
 dp = Dispatcher()
 router = Router()
@@ -64,27 +67,28 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
     return [text[i:i + limit] for i in range(0, len(text), limit)]
 
 
-# ---------- Клавиатура ----------
+# ---------- Reply-клавиатура ----------
 
-def build_days_keyboard(monday: date) -> InlineKeyboardMarkup:
-    """6 кнопок: Пн–Сб. callback_data = 'day:YYYY.MM.DD'."""
-    rows = []
+def build_days_keyboard(monday: date) -> ReplyKeyboardMarkup:
+    """6 кнопок (Пн–Сб) на следующую неделю. По 2 в ряд."""
+    keyboard = []
     row = []
-    for i in range(6):  # 0..5 — Пн..Сб
+    for i in range(6):
         d = monday + timedelta(days=i)
         label = f"{d.strftime('%d.%m.%Y')} ({RU_DAYS[i]})"
-        row.append(
-            InlineKeyboardButton(
-                text=label,
-                callback_data=f"day:{d.strftime('%Y.%m.%d')}",
-            )
-        )
+        row.append(KeyboardButton(text=label))
         if len(row) == 2:
-            rows.append(row)
+            keyboard.append(row)
             row = []
     if row:
-        rows.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        keyboard.append(row)
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="Выбери день",
+    )
 
 
 # ---------- Хендлеры ----------
@@ -94,7 +98,7 @@ async def cmd_start(message: Message):
     await message.answer(
         "Привет! Я показываю расписание.\n\n"
         "Команды:\n"
-        "/schedule — выбрать день на следующей неделе"
+        "/schedule — показать кнопки с днями"
     )
 
 
@@ -103,39 +107,39 @@ async def cmd_schedule(message: Message):
     today = date.today()
     monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
     sunday = monday + timedelta(days=6)
-    start = monday.strftime("%Y.%m.%d")
-    finish = sunday.strftime("%Y.%m.%d")
 
     kb = build_days_keyboard(monday)
     await message.answer(
-        f"Выбери день ({start} — {finish}):",
+        f"Выбери день ({monday.strftime('%d.%m.%Y')} — {sunday.strftime('%d.%m.%Y')}):",
         reply_markup=kb,
     )
 
 
-@router.callback_query(F.data.startswith("day:"))
-async def on_day_click(callback: CallbackQuery):
-    api_date = callback.data.split(":", 1)[1]       # "2026.09.28"
-    iso_date = api_date.replace(".", "-")           # "2026-09-28"
+@router.message(lambda m: m.text and DAY_BUTTON_RE.match(m.text))
+async def on_day_press(message: Message):
+    m = DAY_BUTTON_RE.match(message.text)
+    dd, mm, yyyy, _ = m.groups()
+    api_date = f"{yyyy}.{mm}.{dd}"
+    iso_date = f"{yyyy}-{mm}-{dd}"
 
-    await callback.answer("Загружаю…")
+    await message.answer(f"⏳ Загружаю {dd}.{mm}.{yyyy}…")
 
     try:
         lessons = await fetch_schedule(GROUP_ID, api_date, api_date)
     except aiohttp.ClientError as e:
-        await callback.message.answer(f"❌ Ошибка сети: {e}")
+        await message.answer(f"❌ Ошибка сети: {e}")
         return
     except Exception as e:
         traceback.print_exc()
-        await callback.message.answer(f"❌ {type(e).__name__}: {e!r}")
+        await message.answer(f"❌ {type(e).__name__}: {e!r}")
         return
 
-    # на случай, если API вернёт всю неделю, а не один день
+    # если API вернёт всю неделю — отфильтруем только этот день
     day_lessons = [l for l in lessons if l.get("date") == iso_date]
 
     text = format_lessons_for_day(day_lessons, iso_date)
     for chunk in split_message(text):
-        await callback.message.answer(chunk)
+        await message.answer(chunk)
 
 
 @router.message()
