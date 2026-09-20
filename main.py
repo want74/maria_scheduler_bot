@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message,
@@ -26,9 +26,25 @@ API_URL = "https://ruz.guz.ru/api/schedule/group/{group}"
 RU_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 DAY_BUTTON_RE = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})\s*\((\w{2})\)$")
 
+# состояние: chat_id -> понедельник отображаемой недели
+user_week: dict[int, date] = {}
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
+
+
+# ---------- состояние недели ----------
+
+def current_monday() -> date:
+    today = date.today()
+    return today - timedelta(days=today.weekday())
+
+def get_user_monday(chat_id: int) -> date:
+    return user_week.get(chat_id, current_monday())
+
+def set_user_monday(chat_id: int, monday: date) -> None:
+    user_week[chat_id] = monday
 
 
 # ---------- API ----------
@@ -92,7 +108,6 @@ def format_lessons_for_day(lessons: list, iso_date: str) -> str:
 
 
 def split_message(text: str, limit: int = 30000) -> list[str]:
-    """Rich-сообщение держит до 32k, режем с запасом."""
     return [text[i:i + limit] for i in range(0, len(text), limit)]
 
 
@@ -111,11 +126,23 @@ def build_days_keyboard(monday: date) -> ReplyKeyboardMarkup:
     if row:
         keyboard.append(row)
 
+    # кнопки листания — внизу
+    keyboard.append([KeyboardButton(text="<<"), KeyboardButton(text=">>")])
+
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
         resize_keyboard=True,
         one_time_keyboard=False,
-        input_field_placeholder="Выбери день",
+        input_field_placeholder="Выбери день или листай недели",
+    )
+
+
+async def show_week(message: Message, monday: date) -> None:
+    sunday = monday + timedelta(days=6)
+    kb = build_days_keyboard(monday)
+    await message.answer(
+        f"Неделя {monday.strftime('%d.%m.%Y')} — {sunday.strftime('%d.%m.%Y')}:",
+        reply_markup=kb,
     )
 
 
@@ -126,21 +153,30 @@ async def cmd_start(message: Message):
     await message.answer(
         "Привет! Я показываю расписание.\n\n"
         "Команды:\n"
-        "/schedule — показать кнопки с днями"
+        "/schedule — показать дни недели\n\n"
+        "Кнопки << и >> листают недели."
     )
 
 
 @router.message(Command("schedule"))
 async def cmd_schedule(message: Message):
-    today = date.today()
-    monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
-    sunday = monday + timedelta(days=6)
+    monday = current_monday()
+    set_user_monday(message.chat.id, monday)
+    await show_week(message, monday)
 
-    kb = build_days_keyboard(monday)
-    await message.answer(
-        f"Выбери день ({monday.strftime('%d.%m.%Y')} — {sunday.strftime('%d.%m.%Y')}):",
-        reply_markup=kb,
-    )
+
+@router.message(F.text == "<<")
+async def on_prev_week(message: Message):
+    monday = get_user_monday(message.chat.id) - timedelta(days=7)
+    set_user_monday(message.chat.id, monday)
+    await show_week(message, monday)
+
+
+@router.message(F.text == ">>")
+async def on_next_week(message: Message):
+    monday = get_user_monday(message.chat.id) + timedelta(days=7)
+    set_user_monday(message.chat.id, monday)
+    await show_week(message, monday)
 
 
 @router.message(lambda m: m.text and DAY_BUTTON_RE.match(m.text))
